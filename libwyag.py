@@ -100,15 +100,15 @@ def repo_create(path):
     if os.path.exists(repo.worktree):
         if not os.path.isdir(repo.worktree):
             raise Exception(f"{path} is not a directory!")
-        if os.listdir(repo.worktree):
+        if os.path.isdir(repo.gitdir):
             raise Exception(f"{path} is not empty!")
     else:
         os.makedirs(repo.worktree)
 
-    assert repo.repo_dir("branches", mkdir=True)
-    assert repo.repo_dir("objects", mkdir=True)
-    assert repo.repo_dir("refs", "tags", mkdir=True)
-    assert repo.repo_dir("refs", "heads", mkdir=True)
+    repo.repo_dir("branches", mkdir=True)
+    repo.repo_dir("objects", mkdir=True)
+    repo.repo_dir("refs", "tags", mkdir=True)
+    repo.repo_dir("refs", "heads", mkdir=True)
 
     with open(repo.repo_file("description"), "w", encoding="utf-8") as f:
         f.write("Unnamed repository; edit this file 'description' to name the repository.\n")
@@ -194,8 +194,12 @@ def object_read(repo, sha):
         raw = zlib.decompress(f.read())
 
     x = raw.find(b" ")
+    if x == -1:
+        raise Exception(f"Malformed object {sha}: no space found")
     fmt = raw[0:x]
-    y = raw.find(b"\x00", x)
+    y = raw.find(b"\x00", x+1)
+    if y == -1:
+        raise Exception(f"Malformed object {sha}: no null byte found")
     size = int(raw[x:y].decode("ascii"))
     if size != len(raw) - y - 1:
         raise Exception(f"Malformed object {sha}: bad length")
@@ -298,8 +302,11 @@ def unpack_packfile(repo, packfile_path):
     packfile_abs = os.path.realpath(packfile_path)
     gitdir_abs = os.path.realpath(repo.gitdir)
 
-    if os.path.commonpath([packfile_abs, gitdir_abs]) == gitdir_abs:
-        raise Exception("Packfile must be outside .git directory.")
+    try: 
+        if os.path.commonpath([packfile_abs, gitdir_abs]) == gitdir_abs:
+            raise Exception("Packfile must be outside .git directory.")
+    except ValueError:
+        pass
     if not os.path.isfile(packfile_abs):
         raise Exception(f"Packfile not found: {packfile_path}")
 

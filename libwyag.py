@@ -486,55 +486,58 @@ class GitTreeLeaf (object):
         self.path = path
         self.sha = sha
 
-    def tree_parse_one(raw,start=0):
-        x=raw.find(b' ', start)
-        assert x-start == 5 or x-start==6
-        # Read the mode
-        mode = raw[start:x]
-        if len(mode) == 5:
-            # Normalize to six bytes.
-            mode = b"0" + mode
+def tree_parse_one(raw,start=0):
+    x=raw.find(b' ', start)
+    assert x-start == 5 or x-start==6
+    # Read the mode
+    mode = raw[start:x]
+    if len(mode) == 5:
+        # Normalize to six bytes.
+        mode = b"0" + mode
 
-        # Find the NULL terminator of the path
-        y = raw.find(b'\x00', x)
-        # and read the path
-        path = raw[x+1:y]
+    # Find the NULL terminator of the path
+    y = raw.find(b'\x00', x)
+    # and read the path
+    path = raw[x+1:y]
 
-        # Read the SHA…
-        raw_sha = int.from_bytes(raw[y+1:y+21], "big")
-        # and convert it into an hex string, padded to 40 chars
-        # with zeros if needed.
-        sha = format(raw_sha, "040x")
-        return y+21, GitTreeLeaf(mode, path.decode("utf8"), sha)
-    
-    def tree_parse(raw):
-        pos = 0
-        max = len(raw)
-        ret = list()
-        while pos < max:
-            pos, data = tree_parse_one(raw, pos)
-            ret.append(data)
+    # Read the SHA…
+    raw_sha = int.from_bytes(raw[y+1:y+21], "big")
+    # and convert it into an hex string, padded to 40 chars
+    # with zeros if needed.
+    sha = format(raw_sha, "040x")
+    return y+21, GitTreeLeaf(mode, path.decode("utf8"), sha)
 
-        return ret
 
-    def tree_leaf_sort_key(leaf):
-        if leaf.mode.startswith(b"4"):
-            return leaf.path + "/"
-        else:
-            return leaf.path
-    
-    def tree_serialize(obj):
-        obj.items.sort(key=tree_leaf_sort_key)
-        ret = b''
-        for i in obj.items:
-            ret += i.mode
-            ret += b' '
-            ret += i.path.encode("utf8")
-            ret += b'\x00'
-            sha = int(i.sha, 16)
-            ret += sha.to_bytes(20, byteorder="big")
-        return ret
-    
+def tree_parse(raw):
+    pos = 0
+    max = len(raw)
+    ret = list()
+    while pos < max:
+        pos, data = tree_parse_one(raw, pos)
+        ret.append(data)
+
+    return ret
+
+
+def tree_leaf_sort_key(leaf):
+    if leaf.mode.startswith(b"04"):
+        return leaf.path + "/"
+    else:
+        return leaf.path
+
+
+def tree_serialize(obj):
+    obj.items.sort(key=tree_leaf_sort_key)
+    ret = b''
+    for i in obj.items:
+        ret += i.mode
+        ret += b' '
+        ret += i.path.encode("utf8")
+        ret += b'\x00'
+        sha = int(i.sha, 16)
+        ret += sha.to_bytes(20, byteorder="big")
+    return ret
+
 class GitTree(GitObject):
     fmt=b'tree'
 
@@ -610,9 +613,19 @@ def cmd_checkout(args):
     tree_checkout(repo, obj, os.path.realpath(args.path))
 
 def tree_checkout(repo, tree, path):
+    path = os.path.realpath(path)
     for item in tree.items:
         obj = object_read(repo, item.sha)
-        dest = os.path.join(path, item.path)
+        if os.path.isabs(item.path):
+            raise Exception(f"Invalid tree path {item.path}: absolute paths are not allowed")
+
+        normalized_path = os.path.normpath(item.path)
+        if normalized_path == ".." or normalized_path.startswith(".." + os.sep):
+            raise Exception(f"Invalid tree path {item.path}: path escapes checkout directory")
+
+        dest = os.path.realpath(os.path.join(path, normalized_path))
+        if os.path.commonpath([path, dest]) != path:
+            raise Exception(f"Invalid tree path {item.path}: path escapes checkout directory")
 
         if obj.fmt == b'tree':
             os.mkdir(dest)
@@ -623,7 +636,7 @@ def tree_checkout(repo, tree, path):
                 f.write(obj.blobdata)
 
 def ref_resolve(repo, ref):
-    path = repo_file(repo, ref)
+    path = repo.repo_file(ref)
 
     # Sometimes, an indirect reference may be broken.  This is normal
     # in one specific case: we're looking for HEAD on a new repository
@@ -643,7 +656,7 @@ def ref_resolve(repo, ref):
     
 def ref_list(repo, path=None):
     if not path:
-        path = repo_dir(repo, "refs")
+        path = repo.repo_dir("refs")
     ret = dict()
     # Git shows refs sorted.  To do the same, we sort the output of
     # listdir
@@ -652,7 +665,7 @@ def ref_list(repo, path=None):
         if os.path.isdir(can):
             ret[f] = ref_list(repo, can)
         else:
-            ret[f] = ref_resolve(repo, can)
+            ret[f] = ref_resolve(repo, os.path.relpath(can, repo.gitdir))
 
     return ret
 
